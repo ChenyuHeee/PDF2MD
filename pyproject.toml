@@ -32,8 +32,8 @@ dev = ["pytest>=7.0", "ruff>=0.4"]
 pdf2md = "pdf2md.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/your-name/PDF2MD"
-Issues = "https://github.com/your-name/PDF2MD/issues"
+Homepage = "https://github.com/ChenyuHeee/PDF2MD"
+Issues = "https://github.com/ChenyuHeee/PDF2MD/issues"
 
 [tool.setuptools.packages.find]
 include = ["pdf2md*"]

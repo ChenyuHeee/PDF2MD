@@ -18,7 +18,7 @@
 ## 安装
 
 ```bash
-git clone https://github.com/your-name/PDF2MD.git
+git clone https://github.com/ChenyuHeee/PDF2MD.git
 cd PDF2MD
 pip install -e .
 
