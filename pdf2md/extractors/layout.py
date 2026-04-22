@@ -30,15 +30,32 @@ def _projection(blocks: List[TextBlock], width: float, bins: int = 200) -> List[
 
 
 def detect_column_split(
-    blocks: List[TextBlock], width: float, *, min_gap_ratio: float = 0.04
+    blocks: List[TextBlock], width: float, *, min_gap_ratio: float = 0.025
 ) -> Optional[float]:
-    """返回分栏 x 坐标；若是单栏返回 None。"""
+    """返回分栏 x 坐标；若是单栏返回 None。
 
-    if len(blocks) < 6 or width <= 0:
+    只用"中等宽度"文本块做投影（排除全幅标题和窄作者名/图注碎片），
+    避免它们把列间空隙遮蔽，并降低最小空隙比例阈值。
+    """
+
+    if len(blocks) < 4 or width <= 0:
         return None
 
+    # 只保留宽度在 [20%, 80%] 页宽区间的块，以排除：
+    #   < 20%: 作者短名、坐标轴标签等窄块
+    #   > 80%: 全幅标题、大型表格、图片注释等满栏块
+    body_width_min = width * 0.20
+    body_width_max = width * 0.80
+    proj_blocks = [
+        b for b in blocks
+        if body_width_min < (b.bbox[2] - b.bbox[0]) < body_width_max
+    ]
+    if len(proj_blocks) < 4:
+        # 候选块太少，回退到全部块
+        proj_blocks = blocks
+
     bins = 200
-    proj = _projection(blocks, width, bins=bins)
+    proj = _projection(proj_blocks, width, bins=bins)
 
     lo = int(bins * 0.35)
     hi = int(bins * 0.65)
@@ -68,25 +85,38 @@ def detect_column_split(
     return best_center / bins * width
 
 
-def assign_columns(blocks: List[TextBlock], split_x: Optional[float]) -> None:
-    """就地给每个 TextBlock 写入 column 编号。"""
+def assign_columns(blocks: List[TextBlock], split_x: Optional[float], width: float = 0.0) -> None:
+    """就地给每个 TextBlock 写入 column 编号。
+
+    column = -1：全幅块（如论文标题），排序时放在所有分栏块之前。
+    column =  0：左栏（或单栏模式下所有块）。
+    column =  1：右栏。
+    """
 
     if split_x is None:
         for b in blocks:
             b.column = 0
         return
     for b in blocks:
-        cx = (b.bbox[0] + b.bbox[2]) / 2
-        b.column = 0 if cx < split_x else 1
+        w = b.bbox[2] - b.bbox[0]
+        if width > 0 and w > width * 0.70:
+            # 全幅块（标题、分隔线等）：column=-1，排序时总在最前
+            b.column = -1
+        else:
+            cx = (b.bbox[0] + b.bbox[2]) / 2
+            b.column = 0 if cx < split_x else 1
 
 
 def reading_order(
     blocks: List[TextBlock], width: float
 ) -> Tuple[List[TextBlock], Optional[float]]:
-    """按阅读顺序排序文本块；同时返回检测到的 split_x（用于 debug）。"""
+    """按阅读顺序排序文本块；同时返回检测到的 split_x（用于 debug）。
+
+    column=-1（全幅块如标题）总排在最前；同栏内按 y0 升序排列。
+    """
 
     split_x = detect_column_split(blocks, width)
-    assign_columns(blocks, split_x)
-    # 同栏内按 y0 升序，再按 x0 升序
+    assign_columns(blocks, split_x, width)
+    # column=-1 最前，同栏按 y 升序，再按 x 升序
     blocks_sorted = sorted(blocks, key=lambda b: (b.column, round(b.bbox[1], 1), b.bbox[0]))
     return blocks_sorted, split_x

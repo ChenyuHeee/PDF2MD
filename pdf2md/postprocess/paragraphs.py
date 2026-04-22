@@ -138,12 +138,31 @@ def merge_paragraph_blocks(blocks: List[TextBlock]) -> List[TextBlock]:
         cw = col_widths.get(prev.column, col_widths.get(0, 400.0))
         fill = _last_line_fill(prev, bx0, cw)
 
-        if fill >= 0.85:
+        # 字号差异过大（>15%）→ 不合并（如正文段接版权注释、脚注）
+        prev_sz = _block_avg_size(prev)
+        cur_sz = _block_avg_size(block)
+        if prev_sz > 0 and cur_sz > 0:
+            sz_ratio = min(prev_sz, cur_sz) / max(prev_sz, cur_sz)
+            if sz_ratio < 0.85:
+                merged.append(block)
+                continue
+
+        if fill >= 0.87:
             merged[-1] = _merge_two_blocks(prev, block)
         else:
             merged.append(block)
 
     return merged
+
+
+def _block_avg_size(block: TextBlock) -> float:
+    total, n = 0.0, 0
+    for ln in block.lines:
+        for s in ln.spans:
+            if s.text.strip():
+                total += s.size * len(s.text)
+                n += len(s.text)
+    return total / n if n else 0.0
 
 
 # ---------------------------------------------------------------------------

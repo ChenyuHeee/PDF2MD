@@ -9,14 +9,18 @@ from ..types import TextBlock
 
 
 def estimate_body_size(blocks_per_page: List[List[TextBlock]]) -> float:
-    """全局正文字号 = 所有 span 字号的众数（按字符数加权）。"""
+    """全局正文字号 = 所有 span 字号的众数（按字符数加权）。
+
+    仅统计 8.5~25pt 范围内的字号，排除上标/下标、超小版权声明、
+    参考文献小字等，避免它们把正文字号估算值拉偏。
+    """
 
     counter: Counter = Counter()
     for blocks in blocks_per_page:
         for b in blocks:
             for ln in b.lines:
                 for s in ln.spans:
-                    if s.size > 0 and s.text.strip():
+                    if s.size >= 8.5 and s.size <= 25.0 and s.text.strip():
                         counter[round(s.size, 1)] += len(s.text)
     if not counter:
         return 10.0
@@ -54,7 +58,7 @@ def heading_level(block: TextBlock, body_size: float) -> int:
         return 1
     if ratio >= 1.35:
         return 2
-    if ratio >= 1.2:
+    if ratio >= 1.2 and is_bold:   # 必须加粗；纯靠字号稍大容易误判作者名
         return 3
     if ratio >= 1.1 and is_bold:
         return 4

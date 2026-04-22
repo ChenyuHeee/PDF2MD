@@ -144,3 +144,64 @@ def filter_figure_fragments(
             result.append(b)
 
     return result
+
+
+def filter_margin_blocks(blocks: List[TextBlock], page_width: float) -> List[TextBlock]:
+    """过滤左/右边距外的文本块（如 arXiv 旋转水印印章）。
+
+    arXiv 给论文添加的旋转水印 bbox 通常是 x0≈5~15, x1≈40（非常窄，在边距内）。
+    判定条件：块整体在左边距（x1 < 45）或右边距（x0 > page_width - 20）内，
+    或者块的宽 / 高 < 0.05（极细竖向旋转文字）。
+    """
+    result = []
+    for b in blocks:
+        x0, y0, x1, y1 = b.bbox
+        w, h = x1 - x0, y1 - y0
+        # 在页面左/右边距外
+        if x1 < 45 or x0 > page_width - 20:
+            continue
+        # 极度窄高比（旋转文字侧印）：宽/高 < 0.12 且宽 < 30pt
+        if h > 0 and w / h < 0.12 and w < 30:
+            continue
+        result.append(b)
+    return result
+
+
+def filter_vector_figure_fragments(blocks: List[TextBlock]) -> List[TextBlock]:
+    """聚类检测并过滤向量图内的孤立文本碎片（坐标轴标签、架构图标注等）。
+
+    向量图内的文字标注特征：
+    - 块高度 ≤ 18pt（单行小字体）且宽度 ≤ 80pt
+    - 文本长度 ≤ 25 字符
+
+    核心思路：这些块呈"簇状"聚集——若某块与 ≥ 3 个其他小块的 2D 距离 ≤ 100pt，
+    则判定为图内孤立碎片，过滤掉。
+    正文段落标题（如"2 Motivation"）是孤立的大块，不会被误过滤。
+    """
+    # 找出所有"候选小块"
+    def _is_small(b: TextBlock) -> bool:
+        w = b.bbox[2] - b.bbox[0]
+        h = b.bbox[3] - b.bbox[1]
+        text = "".join(sp.text for ln in b.lines for sp in ln.spans).strip()
+        return h <= 18 and w <= 80 and len(text) <= 25
+
+    small_blocks = [b for b in blocks if _is_small(b)]
+    if len(small_blocks) < 4:
+        # 页面上几乎没有小块，不做过滤
+        return blocks
+
+    # 预计算中心点
+    centers = [((b.bbox[0] + b.bbox[2]) / 2, (b.bbox[1] + b.bbox[3]) / 2) for b in small_blocks]
+
+    # 对每个小块，统计在 100pt 2D 距离内的其他小块数量
+    to_remove: set = set()
+    threshold = 100.0
+    for i, (cx, cy) in enumerate(centers):
+        neighbor_count = 0
+        for j, (ox, oy) in enumerate(centers):
+            if i != j and (cx - ox) ** 2 + (cy - oy) ** 2 <= threshold ** 2:
+                neighbor_count += 1
+        if neighbor_count >= 3:
+            to_remove.add(id(small_blocks[i]))
+
+    return [b for b in blocks if id(b) not in to_remove]

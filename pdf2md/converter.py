@@ -12,7 +12,14 @@ import pdfplumber
 from .extractors.images import ImageWriter
 from .extractors.layout import reading_order
 from .extractors.tables import extract_tables
-from .extractors.text import extract_blocks, filter_outside, filter_headers_footers, filter_figure_fragments
+from .extractors.text import (
+    extract_blocks,
+    filter_outside,
+    filter_headers_footers,
+    filter_figure_fragments,
+    filter_margin_blocks,
+    filter_vector_figure_fragments,
+)
 from .postprocess.paragraphs import merge_paragraph_blocks
 from .types import Page
 from .writers.markdown import TableFormat, render
@@ -60,9 +67,11 @@ class Converter:
                 excluded.extend(img.bbox for img in images)
 
                 blocks = extract_blocks(fpage)
+                blocks = filter_margin_blocks(blocks, fpage.rect.width)
                 blocks = filter_outside(blocks, excluded)
                 blocks = filter_headers_footers(blocks, fpage.rect.height, idx + 1)
                 blocks = filter_figure_fragments(blocks, [img.bbox for img in images])
+                blocks = filter_vector_figure_fragments(blocks)
 
                 blocks_sorted, _ = reading_order(blocks, fpage.rect.width)
                 # 合并同段落的跨-block 续行（解决 PDF 每行一个 block 的问题）
