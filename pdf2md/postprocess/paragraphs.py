@@ -89,20 +89,30 @@ def merge_paragraph_blocks(blocks: List[TextBlock]) -> List[TextBlock]:
     • fill ≥ 0.85（满行）→ 段落还没结束 → 合并后续 block
     • fill < 0.85（短行）→ 段落自然结束 → 下一 block 独立成段
 
-    这一信号与排版风格（是否首行缩进、中英文、栏型）无关，
-    适用于 LaTeX 学术书、电子书、论文等各种 PDF。
+    关键：栏宽 **按列分别估算**。
+    双栏论文每栏约 240pt，若用全页所有块的 x1 估算会得到 ~560pt，
+    导致左栏每行 fill ≈ 0.44，全部误判为"短行/新段落"。
 
     补充硬规则：
     • 相邻 block 跨列          → 强制新段落
     • y 间距 > 2.5×行高       → 强制新段落（图表、节标题之后）
     • y 坐标倒退（乱序）       → 强制新段落
-    • 前一 block 仅单行且很短（fill<0.5）→ 可能是独立元素（定理号/公式编号）→ 不合并
     """
     if len(blocks) <= 1:
         return blocks
 
-    body_x0 = _estimate_body_x0(blocks)
-    col_width = _estimate_col_width(blocks, body_x0)
+    # ── 按列分组，各自估算 body_x0 和 col_width ──────────────────────────
+    from collections import defaultdict as _dd
+    col_groups: dict = _dd(list)
+    for b in blocks:
+        col_groups[b.column].append(b)
+
+    col_body_x0: dict = {}
+    col_widths: dict = {}
+    for col, col_b in col_groups.items():
+        bx0 = _estimate_body_x0(col_b)
+        col_body_x0[col] = bx0
+        col_widths[col] = _estimate_col_width(col_b, bx0)
 
     heights = [b.bbox[3] - b.bbox[1] for b in blocks if b.bbox[3] - b.bbox[1] > 1]
     avg_h = sum(heights) / len(heights) if heights else 14.0
@@ -123,13 +133,14 @@ def merge_paragraph_blocks(blocks: List[TextBlock]) -> List[TextBlock]:
             merged.append(block)
             continue
 
-        fill = _last_line_fill(prev, body_x0, col_width)
+        # 使用前块所在列的栏宽
+        bx0 = col_body_x0.get(prev.column, col_body_x0.get(0, 36.0))
+        cw = col_widths.get(prev.column, col_widths.get(0, 400.0))
+        fill = _last_line_fill(prev, bx0, cw)
 
-        # 前块是完整满行 → 段落未结束 → 续行合并
         if fill >= 0.85:
             merged[-1] = _merge_two_blocks(prev, block)
         else:
-            # 前块短行（段落结束）→ 新段落
             merged.append(block)
 
     return merged
