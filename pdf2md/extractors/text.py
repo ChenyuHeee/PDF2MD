@@ -167,41 +167,137 @@ def filter_margin_blocks(blocks: List[TextBlock], page_width: float) -> List[Tex
     return result
 
 
-def filter_vector_figure_fragments(blocks: List[TextBlock]) -> List[TextBlock]:
-    """聚类检测并过滤向量图内的孤立文本碎片（坐标轴标签、架构图标注等）。
+def detect_vector_figure_bboxes(
+    fpage: "fitz.Page",
+    min_paths: int = 20,
+    min_size: float = 55.0,
+) -> List[BBox]:
+    """通过 PyMuPDF 绘图路径聚类，检测页面上矢量图（图表、架构图等）的边界框。
 
-    向量图内的文字标注特征：
-    - 块高度 ≤ 18pt（单行小字体）且宽度 ≤ 80pt
-    - 文本长度 ≤ 25 字符
+    算法：
+    1. 收集所有非全页的绘图路径 rect
+    2. 用迭代合并将相邻/重叠的 rect 合并为区域（margin=8pt）
+    3. 路径数 >= min_paths 且宽/高均 >= min_size 的区域视为矢量图
 
-    核心思路：这些块呈"簇状"聚集——若某块与 ≥ 3 个其他小块的 2D 距离 ≤ 100pt，
-    则判定为图内孤立碎片，过滤掉。
-    正文段落标题（如"2 Motivation"）是孤立的大块，不会被误过滤。
+    min_paths=20 可避免把普通数据表格的边框线（通常 10~15 条路径）误判为图形；
+    min_size=55 可过滤掉装饰性横线、分隔符等。
+
+    返回：加了少量 padding 的图形边界框列表，供调用方过滤文字块/表格。
     """
-    # 找出所有"候选小块"
+    drawings = fpage.get_drawings()
+    if not drawings:
+        return []
+
+    page_w = fpage.rect.width
+    page_h = fpage.rect.height
+
+    # 收集有意义的绘图 rect，跳过全页边框/极细微路径
+    rects: List[List[float]] = []  # [x0, y0, x1, y1, count]
+    for d in drawings:
+        r = d.get("rect")
+        if r is None or r.is_empty:
+            continue
+        x0, y0, x1, y1 = r.x0, r.y0, r.x1, r.y1
+        w, h = x1 - x0, y1 - y0
+        if w > page_w * 0.8 or h > page_h * 0.8:
+            continue  # 跳过全页横/竖线/边框
+        if w < 0.5 and h < 0.5:
+            continue  # 跳过退化路径
+        rects.append([x0, y0, x1, y1, 1])
+
+    if len(rects) < min_paths:
+        return []
+
+    # 迭代合并：只要两个 rect 间距 <= margin，就合并
+    margin = 8.0
+    changed = True
+    while changed:
+        changed = False
+        i = 0
+        while i < len(rects):
+            j = i + 1
+            while j < len(rects):
+                a, b = rects[i], rects[j]
+                if (
+                    a[0] - margin <= b[2]
+                    and a[2] + margin >= b[0]
+                    and a[1] - margin <= b[3]
+                    and a[3] + margin >= b[1]
+                ):
+                    rects[i] = [
+                        min(a[0], b[0]),
+                        min(a[1], b[1]),
+                        max(a[2], b[2]),
+                        max(a[3], b[3]),
+                        a[4] + b[4],
+                    ]
+                    rects.pop(j)
+                    changed = True
+                else:
+                    j += 1
+            i += 1
+
+    # 筛选出足够大且有足够路径数的区域
+    result: List[BBox] = []
+    pad = 4.0
+    for x0, y0, x1, y1, count in rects:
+        if count >= min_paths and (x1 - x0) >= min_size and (y1 - y0) >= min_size:
+            result.append((x0 - pad, y0 - pad, x1 + pad, y1 + pad))
+    return result
+
+
+def filter_vector_figure_fragments(
+    blocks: List[TextBlock],
+    figure_bboxes: List[BBox] | None = None,
+) -> List[TextBlock]:
+    """过滤矢量图内的孤立文本碎片（坐标轴标签、图例、架构图标注等）。
+
+    优先策略（当 figure_bboxes 可用时）：
+      若文本块中心落在已检测到的矢量图区域内，则过滤。
+      这覆盖所有尺寸的图内文字，无论文字长短宽窄。
+
+    回退策略（figure_bboxes 为空时）：
+      对"小块"（高≤18pt、宽≤120pt、文字≤50字）做密度聚类：
+      若周围 150pt 范围内有 ≥3 个其他小块，则视为图内碎片过滤。
+      阈值比旧版更宽松，以覆盖更长的轴标签和图例文字。
+    """
+    if figure_bboxes:
+        result = []
+        for b in blocks:
+            cx = (b.bbox[0] + b.bbox[2]) / 2
+            cy = (b.bbox[1] + b.bbox[3]) / 2
+            in_figure = any(
+                fx0 <= cx <= fx1 and fy0 <= cy <= fy1
+                for fx0, fy0, fx1, fy1 in figure_bboxes
+            )
+            if not in_figure:
+                result.append(b)
+        return result
+
+    # ---- 回退：密度聚类（无 drawing 信息时使用）----
     def _is_small(b: TextBlock) -> bool:
         w = b.bbox[2] - b.bbox[0]
         h = b.bbox[3] - b.bbox[1]
         text = "".join(sp.text for ln in b.lines for sp in ln.spans).strip()
-        return h <= 18 and w <= 80 and len(text) <= 25
+        return h <= 18 and w <= 120 and len(text) <= 50
 
     small_blocks = [b for b in blocks if _is_small(b)]
     if len(small_blocks) < 4:
-        # 页面上几乎没有小块，不做过滤
         return blocks
 
-    # 预计算中心点
-    centers = [((b.bbox[0] + b.bbox[2]) / 2, (b.bbox[1] + b.bbox[3]) / 2) for b in small_blocks]
-
-    # 对每个小块，统计在 100pt 2D 距离内的其他小块数量
+    centers = [
+        ((b.bbox[0] + b.bbox[2]) / 2, (b.bbox[1] + b.bbox[3]) / 2)
+        for b in small_blocks
+    ]
     to_remove: set = set()
-    threshold = 100.0
+    threshold = 150.0
     for i, (cx, cy) in enumerate(centers):
-        neighbor_count = 0
-        for j, (ox, oy) in enumerate(centers):
-            if i != j and (cx - ox) ** 2 + (cy - oy) ** 2 <= threshold ** 2:
-                neighbor_count += 1
-        if neighbor_count >= 3:
+        neighbors = sum(
+            1
+            for j, (ox, oy) in enumerate(centers)
+            if i != j and (cx - ox) ** 2 + (cy - oy) ** 2 <= threshold**2
+        )
+        if neighbors >= 3:
             to_remove.add(id(small_blocks[i]))
 
     return [b for b in blocks if id(b) not in to_remove]

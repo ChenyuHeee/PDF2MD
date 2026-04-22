@@ -13,6 +13,7 @@ from .extractors.images import ImageWriter
 from .extractors.layout import reading_order
 from .extractors.tables import extract_tables
 from .extractors.text import (
+    detect_vector_figure_bboxes,
     extract_blocks,
     filter_outside,
     filter_headers_footers,
@@ -66,12 +67,26 @@ class Converter:
                 # 图片占位区域也排除文本，避免重复
                 excluded.extend(img.bbox for img in images)
 
+                # 检测页面上的矢量图区域（通过绘图路径聚类）
+                figure_bboxes = detect_vector_figure_bboxes(fpage)
+                # 矢量图区域内的假表格一并过滤（中心点落在图区域内的表格）
+                if figure_bboxes:
+                    tables = [
+                        t for t in tables
+                        if not any(
+                            fx0 <= (t.bbox[0] + t.bbox[2]) / 2 <= fx1
+                            and fy0 <= (t.bbox[1] + t.bbox[3]) / 2 <= fy1
+                            for fx0, fy0, fx1, fy1 in figure_bboxes
+                        )
+                    ]
+                    excluded = [t.bbox for t in tables] + [img.bbox for img in images]
+
                 blocks = extract_blocks(fpage)
                 blocks = filter_margin_blocks(blocks, fpage.rect.width)
                 blocks = filter_outside(blocks, excluded)
                 blocks = filter_headers_footers(blocks, fpage.rect.height, idx + 1)
                 blocks = filter_figure_fragments(blocks, [img.bbox for img in images])
-                blocks = filter_vector_figure_fragments(blocks)
+                blocks = filter_vector_figure_fragments(blocks, figure_bboxes)
 
                 blocks_sorted, _ = reading_order(blocks, fpage.rect.width)
                 # 合并同段落的跨-block 续行（解决 PDF 每行一个 block 的问题）

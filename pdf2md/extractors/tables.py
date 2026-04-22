@@ -20,8 +20,9 @@ def _is_figure_garbage(rows: List[List[str]]) -> bool:
     1. 任意单元格内连续重复字符序列 ≥ 3 对（高度可靠的乱码信号）
     2. 整张表格只有 1 行 1 列且单元格文字超过 200 字符
     3. 表格行数 ≤ 3 且非空单元格 ≤ 3，且存在 ≥12 字母连续（连词拼接）
-    4. 单元格总数 ≥ 6，空白率 ≥ 60%，且所有非空单元格内容极短（< 20字符）
-       —— 对应矢量图方块标签被误识别为稀疏表格的情形
+
+    注：稀疏短文字假表格（如架构图方块标签被误识别的情形）已在
+    converter.py 中通过矢量图区域检测统一过滤，此处不再重复。
     """
     all_text = " ".join(cell for row in rows for cell in row)
     non_empty = [cell for row in rows for cell in row if cell.strip()]
@@ -39,13 +40,6 @@ def _is_figure_garbage(rows: List[List[str]]) -> bool:
         for cell in non_empty:
             if _CONCAT_WORD_RE.search(cell):
                 return True
-
-    # 条件 4：高空白率 + 所有非空单元格为极短碎片
-    total_cells = sum(len(row) for row in rows)
-    if total_cells >= 6 and non_empty:
-        empty_ratio = (total_cells - len(non_empty)) / total_cells
-        if empty_ratio >= 0.6 and all(len(c) < 20 for c in non_empty):
-            return True
 
     return False
 
